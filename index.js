@@ -12,7 +12,7 @@ const URL_CRIPTO_ARS = "https://criptoya.com/api/USDT/ARS/500";
 const IGNORED = ["kucoinp2p", "banexcoin", "xapo", "x4t"];
 const POLL_INTERVAL = 60 * 1000; // 60 segundos
 const THRESHOLD_USD = 1.020;
-const THRESHOLD_ARS_DIFF = 0.005; // 0.5%
+const THRESHOLD_ARS_DIFF = 0.05; // 5%
 const COOLDOWN_MINUTES = 30 * 60 * 1000; // 30 minutos
 
 // --- Función de envío a Telegram ---
