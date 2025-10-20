@@ -5,14 +5,32 @@ const app = express();
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
-const URL_CRIPTO = "https://criptoya.com/api/USDT/USD/500";
+
+// Configuración
+const URL_CRIPTO_USD = "https://criptoya.com/api/USDT/USD/500";
+const URL_CRIPTO_ARS = "https://criptoya.com/api/USDT/ARS/500";
 const IGNORED = ["kucoinp2p", "banexcoin", "xapo", "x4t"];
 const POLL_INTERVAL = 60 * 1000; // 60 segundos
 const THRESHOLD = 1.020;
+const THRESHOLD_ARS_DIFF = 0.005; // 0.5%
 
+// --- Funciones auxiliares ---
+async function sendTelegramMessage(text) {
+    try {
+        await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+            chat_id: CHAT_ID,
+            text,
+            parse_mode: "HTML"
+        });
+    } catch (err) {
+        console.log("Error enviando Telegram:", err);
+    }
+}
+
+// --- Consulta USDT/USD ---
 async function getLowestTotalAsk() {
     try {
-        const res = await axios.get(URL_CRIPTO);
+        const res = await axios.get(URL_CRIPTO_USD);
         let bestPrice = null;
         let bestExchange = null;
 
@@ -27,23 +45,51 @@ async function getLowestTotalAsk() {
         }
         return { bestPrice, bestExchange };
     } catch (err) {
-        console.log("Error consultando CriptoYa:", err);
+        console.log("Error consultando CriptoYa USD:", err);
         return { bestPrice: null, bestExchange: null };
     }
 }
 
-async function sendTelegramMessage(text) {
+// --- Consulta USDT/ARS ---
+async function checkArsBidAnomaly() {
     try {
-        await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-            chat_id: CHAT_ID,
-            text,
-            parse_mode: "HTML"
-        });
+        const res = await axios.get(URL_CRIPTO_ARS);
+        const entries = Object.entries(res.data).filter(([ex]) => !IGNORED.includes(ex));
+
+        // Extraer precios válidos
+        const bids = entries
+            .map(([exchange, val]) => ({ exchange, price: val.totalBid }))
+            .filter(e => e.price && e.price > 0);
+
+        if (bids.length < 2) return;
+
+        // Encontrar el máximo
+        const sorted = bids.sort((a, b) => b.price - a.price);
+        const best = sorted[0];
+        const others = sorted.slice(1);
+
+        // Promedio del resto
+        const avgOthers = others.reduce((acc, e) => acc + e.price, 0) / others.length;
+
+        const diffRatio = (best.price - avgOthers) / avgOthers;
+
+        console.log(`[${new Date().toLocaleTimeString()}] Mejor bid ARS: ${best.exchange} = ${best.price.toFixed(2)} | Promedio resto = ${avgOthers.toFixed(2)} | Diff = ${(diffRatio * 100).toFixed(3)}%`);
+
+        if (diffRatio >= THRESHOLD_ARS_DIFF) {
+            await sendTelegramMessage(
+                `📈 <b>Alerta USDT/ARS:</b>\n` +
+                `💵 <b>${best.exchange}</b> tiene un totalBid anómalo de <b>${best.price.toFixed(2)} ARS</b>\n` +
+                `🧮 Promedio resto: ${avgOthers.toFixed(2)} ARS\n` +
+                `📊 Diferencia: ${(diffRatio * 100).toFixed(2)}%`
+            );
+        }
+
     } catch (err) {
-        console.log("Error enviando Telegram:", err);
+        console.log("Error consultando CriptoYa ARS:", err);
     }
 }
 
+// --- Monitoreo USDT/USD ---
 let lastPrice = null;
 let lastExchange = null;
 
@@ -51,9 +97,9 @@ async function monitorLoop() {
     const { bestPrice, bestExchange } = await getLowestTotalAsk();
     if (!bestPrice) return;
 
-    console.log(`[${new Date().toLocaleTimeString()}] Mejor cotización: ${bestExchange} totalAsk = ${bestPrice}`);
+    console.log(`[${new Date().toLocaleTimeString()}] Mejor cotización USD: ${bestExchange} totalAsk = ${bestPrice}`);
 
-    // No enviar nada si el precio es estrictamente mayor que el umbral (solo enviar si es igual o menor)
+    // Enviar alerta solo si está por debajo o igual al umbral
     if (bestPrice > THRESHOLD) {
         console.log(`[${new Date().toLocaleTimeString()}] Precio ${bestPrice} > umbral ${THRESHOLD} — no se enviará mensaje`);
         lastPrice = bestPrice;
@@ -62,17 +108,25 @@ async function monitorLoop() {
     }
 
     if (bestPrice <= THRESHOLD) {
-        await sendTelegramMessage(`⚡ <b>ALERTA:</b> El USDT bajó de ${THRESHOLD}\n💰 Mejor cotización: <b>${bestExchange}</b> a <b>${bestPrice.toFixed(4)}</b> USD`);
+        await sendTelegramMessage(
+            `⚡ <b>ALERTA:</b> El USDT bajó de ${THRESHOLD}\n` +
+            `💰 Mejor cotización: <b>${bestExchange}</b> a <b>${bestPrice.toFixed(4)}</b> USD`
+        );
     } else if (bestPrice !== lastPrice || bestExchange !== lastExchange) {
-        await sendTelegramMessage(`💰 La mejor cotización del USDT es de <b>${bestExchange}</b> a <b>${bestPrice.toFixed(4)}</b> USD`);
+        await sendTelegramMessage(
+            `💰 La mejor cotización del USDT es de <b>${bestExchange}</b> a <b>${bestPrice.toFixed(4)}</b> USD`
+        );
     }
 
     lastPrice = bestPrice;
     lastExchange = bestExchange;
 }
 
-// Loop cada minuto
-setInterval(monitorLoop, POLL_INTERVAL);
+// --- Loop principal ---
+setInterval(async () => {
+    await monitorLoop();
+    await checkArsBidAnomaly();
+}, POLL_INTERVAL);
 
 // Express keep-alive
 app.get('/', (req, res) => res.send("✅ CriptoYA Alert Bot corriendo"));
